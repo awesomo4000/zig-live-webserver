@@ -114,7 +114,9 @@ pub fn listen(
         @panic("failed to start the event stream");
     }
 
-    c.CFRunLoopRun();
+    while (true) {
+        c.CFRunLoopRun();
+    }
 
     c.FSEventStreamStop(stream);
     c.FSEventStreamInvalidate(stream);

@@ -50,8 +50,8 @@ change_counts: std.StringHashMap(u32),
 building: bool = false,
 build: struct {
     process: ?std.process.Child = null,
-    std_out: std.ArrayList(u8),
-    err_out: std.ArrayList(u8),
+    std_out: std.ArrayListUnmanaged(u8),
+    err_out: std.ArrayListUnmanaged(u8),
     term: std.process.Child.Term = .{
         .Unknown = 0,
     },
@@ -104,8 +104,8 @@ pub fn create(
         .change_counts = std.StringHashMap(u32).init(gpa),
 
         .build = .{
-            .std_out = std.ArrayList(u8).init(gpa),
-            .err_out = std.ArrayList(u8).init(gpa),
+            .std_out = .{},
+            .err_out = .{},
         },
         .unique_server_id = undefined,
     };
@@ -204,8 +204,8 @@ fn triggerBuild(m: *Multiplex) void {
         m.updateState(writer.toOwnedSlice());
     }
 
-    m.build.std_out.clearAndFree();
-    m.build.err_out.clearAndFree();
+    m.build.std_out.clearAndFree(m.gpa);
+    m.build.err_out.clearAndFree(m.gpa);
     m.build.process = std.process.Child.init(args, m.gpa);
     m.build.process.?.stdout_behavior = .Pipe;
     m.build.process.?.stderr_behavior = .Pipe;
@@ -221,7 +221,7 @@ fn triggerBuild(m: *Multiplex) void {
 }
 
 fn buildThread(m: *Multiplex) void {
-    m.build.process.?.collectOutput(&m.build.std_out, &m.build.err_out, 1024 * 20) catch |err| {
+    m.build.process.?.collectOutput(m.gpa, &m.build.std_out, &m.build.err_out, 1024 * 1024) catch |err| {
         m.lock.lock();
         defer m.lock.unlock();
         m.internalBuildError(err);
@@ -271,10 +271,10 @@ fn internalBuildError(m: *Multiplex, err: anyerror) void {
     std.debug.assert(!m.lock.tryLock());
     log.info("Internal build error.", .{});
 
-    m.build.std_out.clearAndFree();
-    m.build.err_out.clearAndFree();
-    m.build.err_out.appendSlice("Internal error running build: ") catch @panic("OOM");
-    m.build.err_out.appendSlice(@errorName(err)) catch @panic("OOM");
+    m.build.std_out.clearAndFree(m.gpa);
+    m.build.err_out.clearAndFree(m.gpa);
+    m.build.err_out.appendSlice(m.gpa, "Internal error running build: ") catch @panic("OOM");
+    m.build.err_out.appendSlice(m.gpa, @errorName(err)) catch @panic("OOM");
     _ = m.build.process.?.kill() catch {};
     m.build.term = .{ .Unknown = 0 };
 

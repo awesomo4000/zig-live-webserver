@@ -162,10 +162,11 @@ const Request = struct {
     };
 
     fn handleEmbed(req: *Request, comptime filename: []const u8, content_type: []const u8) !void {
+        const headers = [_]std.http.Header{
+            .{ .name = "content-type", .value = content_type },
+        };
         try req.http.respond(@embedFile(filename), .{
-            .extra_headers = &(.{
-                .{ .name = "content-type", .value = content_type },
-            } ++ common_headers),
+            .extra_headers = &(headers ++ common_headers),
         });
     }
 
@@ -183,10 +184,7 @@ const Request = struct {
         var path = req.http.head.target;
 
         if (std.mem.indexOf(u8, path, "..")) |_| {
-            req.serveError("'..' not allowed in URLs", .bad_request);
-
-            // TODO: Allow relative paths while ensuring that directories
-            // outside of the served directory can never be accessed.
+            try req.serveError("'..' not allowed in URLs", .bad_request);
             return error.BadPath;
         }
 
@@ -199,7 +197,7 @@ const Request = struct {
 
         if (path.len < 1 or path[0] != '/') {
             if (std.mem.indexOf(u8, path, "..")) |_| {
-                req.serveError("bad request path.", .bad_request);
+                try req.serveError("bad request path.", .bad_request);
                 return error.BadPath;
             }
         }
@@ -214,7 +212,7 @@ const Request = struct {
                 // Original code does this, but it's better handled by the directory
                 // case below, right?
                 // if (std.mem.endsWith(u8, path, "/")) {
-                req.serveError(null, .not_found);
+                try req.serveError(null, .not_found);
                 if (std.mem.eql(u8, path, "favicon.ico")) {
                     return; // Surpress error logging.
                 }
@@ -223,14 +221,14 @@ const Request = struct {
                 // return req.handleAppendSlash();
             },
             else => {
-                req.serveError("accessing resource", .internal_server_error);
+                try req.serveError("accessing resource", .internal_server_error);
                 return err;
             },
         };
         defer file.close();
 
         const metadata = file.metadata() catch |err| {
-            req.serveError("accessing resource", .internal_server_error);
+            try req.serveError("accessing resource", .internal_server_error);
             return err;
         };
         if (metadata.kind() == .directory) {
@@ -247,13 +245,13 @@ const Request = struct {
         };
 
         var buffer: [4000]u8 = undefined;
+        const content_headers = [_]std.http.Header{
+            .{ .name = "content-type", .value = content_type },
+        };
         var response = req.http.respondStreaming(.{
             .send_buffer = &buffer,
-            // .content_length = metadata.size(),
             .respond_options = .{
-                .extra_headers = &(.{
-                    .{ .name = "content-type", .value = content_type },
-                } ++ common_headers),
+                .extra_headers = &(content_headers ++ common_headers),
             },
         });
         try response.writer().writeFile(file);
@@ -266,26 +264,27 @@ const Request = struct {
             "{s}/",
             .{req.http.head.target},
         );
-        try req.http.respond("redirecting...", .{
-            .status = .see_other,
-            .extra_headers = &(.{
-                .{ .name = "location", .value = location },
-                .{ .name = "content-type", .value = "text/html" },
-            } ++ common_headers),
+        const headers = [_]std.http.Header{
+            .{ .name = "location", .value = location },
+        };
+        try req.http.respond("", .{
+            .status = .moved_permanently,
+            .extra_headers = &(headers ++ common_headers),
         });
     }
 
-    fn serveError(req: *Request, comptime reason: ?[]const u8, comptime status: std.http.Status) void {
-        const sep = if (reason) |_| ": " else ".";
-        const text = std.fmt.comptimePrint("{d} {s}{s}{s}", .{ @intFromEnum(status), comptime status.phrase().?, sep, reason orelse "" });
-        req.http.respond(text, .{
-            .status = status,
-            .extra_headers = &(.{
-                .{ .name = "content-type", .value = "text/text" },
-            } ++ common_headers),
-        }) catch |err| {
-            log.warn("Error {s} serving error text {s}", .{ @errorName(err), text });
+    fn serveError(req: *Request, message: ?[]const u8, status: std.http.Status) !void {
+        const error_headers = [_]std.http.Header{
+            .{ .name = "content-type", .value = "text/text" },
         };
+        const text = if (message) |msg|
+            try std.fmt.allocPrint(req.allocator, "{s}: {s}", .{ @tagName(status), msg })
+        else
+            try std.fmt.allocPrint(req.allocator, "{?s}", .{status.phrase()});
+        try req.http.respond(text, .{
+            .status = status,
+            .extra_headers = &(error_headers ++ common_headers),
+        });
     }
 };
 
